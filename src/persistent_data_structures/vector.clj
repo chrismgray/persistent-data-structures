@@ -29,7 +29,7 @@
 
 ;; ## Chunked Sequences
 
-(deftype ArrChunk [array off end _meta]
+(deftype ArrChunk [^objects array off end _meta]
   clojure.lang.IObj
   (meta [this] _meta)
   (withMeta [this m] (ArrChunk. array off end m))
@@ -49,7 +49,7 @@
   (reduce [this f start]
     (reduce f start (drop off array))))
 
-(deftype ChunkedVector [vec node i offset _meta]
+(deftype ChunkedVector [vec ^objects node i offset _meta]
   clojure.lang.IChunkedSeq
   (chunkedFirst [this] (ArrChunk. node offset (count node) {}))
   (chunkedNext [this]
@@ -89,7 +89,7 @@
 (defn- copy-array
   "Copy the elements in `from-array` to `to-array`.  Assumes that
    `to-array` is as long as `from-array`."
-  [from-array to-array]
+  [^objects from-array ^objects to-array]
   (loop [c (count from-array)]
     (when (> c 0)
       (aset to-array (dec c) (aget from-array (dec c)))
@@ -127,7 +127,7 @@
           (throw (IndexOutOfBoundsException.))))
   (cons [this o]
     (if (< (- cnt (.tailoff this)) 32)
-      (let [new-tail (to-array (repeat (inc (count tail)) (Object.)))
+      (let [^objects new-tail (to-array (repeat (inc (count tail)) (Object.)))
             _ (copy-array tail new-tail)
             _ (aset new-tail (count tail) o)]
         (PVector. (inc cnt) shift root new-tail _meta))
@@ -135,7 +135,7 @@
             overflow-root? (> (unsigned-bit-shift-right cnt 5) (bit-shift-left 1 shift))
             [new-shift new-root]
             (if overflow-root?
-              (let [new-root-array (to-array (repeat 32 (Object.)))
+              (let [^objects new-root-array (to-array (repeat 32 (Object.)))
                     _ (aset new-root-array 0 root)
                     _ (aset new-root-array 1 (.new-path this shift tail-node))]
                 [(+ shift 5) (VectorNode. new-root-array)])
@@ -181,8 +181,9 @@
   (new-path [this level node]
     (if (= level 0)
       node
-      (let [ret (VectorNode. (to-array (repeat 32 (Object.))))
-            _ (aset (.array ret) 0 (.new-path this (- level 5) node))]
+      (let [^objects new-array (to-array (repeat 32 (Object.)))
+            ret (VectorNode. new-array)
+            _ (aset new-array 0 (.new-path this (- level 5) node))]
         ret)))
   (push-tail [this level parent tail-node]
     (let [subidx (bit-and (unsigned-bit-shift-right (dec cnt) level) 0x01f)
