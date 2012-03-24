@@ -204,15 +204,13 @@
     (if (> (.count this) 0)
       (.nth this (dec cnt))))
   (pop [this]
-    ;; TODO
-    )
+    (throw (UnsupportedOperationException.)))
   clojure.lang.Seqable
   (seq [this]
     (ChunkedVector. this (.arrayFor this 0) 0 0 {}))
   clojure.lang.Reversible
   (rseq [this]
-    ;; TODO
-    )
+    (throw (UnsupportedOperationException.)))
   clojure.lang.IFn
   (invoke [this k] (.nth this k))
   (invoke [this k not-found] (.nth this k not-found))
