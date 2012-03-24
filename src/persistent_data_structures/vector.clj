@@ -19,6 +19,42 @@
 
 ;; # The Implementation
 
+;; We begin with some helper functions.
+
+(defn- unsigned-bit-shift-right
+  "Shifts the input `x` to the right by `n` places and sets the leftmost bit to 0."
+  [^long x ^long n]
+  (bit-and 0xefffffff (bit-shift-right x n)))
+
+(defn- array-for
+  "A helper function that finds the array containing element `i` "
+  [^PVector vec i]
+  (let [cnt (.cnt vec)
+        ^VectorNode root (.root vec)
+        shift (.shift vec)
+        ^objects tail (.tail vec)
+        tailoff (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5))]
+     (if (and (>= i 0) (< i cnt))
+       (if (>= i tailoff)
+         tail
+         (loop [^VectorNode node root level shift]
+           (let [^objects arr (.array node)]
+             (if (<= level 0)
+               arr
+               (let [new-node (aget arr (bit-and (unsigned-bit-shift-right i level) 0x01f))]
+                 (recur new-node (- level 5)))))))
+       (throw (IndexOutOfBoundsException.)))))
+
+(defn- copy-array
+  "Copy the elements in `from-array` to `to-array`.  Assumes that
+   `to-array` is as long as `from-array`."
+  [^objects from-array ^objects to-array]
+  (loop [c (count from-array)]
+    (when (> c 0)
+      (aset to-array (dec c) (aget from-array (dec c)))
+      (recur (dec c))))
+  to-array)
+
 ;; ## The Node
 
 ;; A node is just an array of 32 objects.  They either point to other
@@ -55,7 +91,7 @@
   (chunkedFirst [this] (ArrChunk. node offset (count node) {}))
   (chunkedNext [this]
     (when (< (+ i (count node)) (.count vec))
-      (ChunkedVector. vec (.arrayFor vec (+ i (count node))) (+ i (count node)) 0 _meta)))
+      (ChunkedVector. vec (array-for vec (+ i (count node))) (+ i (count node)) 0 _meta)))
   (chunkedMore [this]
     (if-let [s (.chunkedNext this)]
       s
@@ -74,38 +110,6 @@
     (ChunkedVector. vec node i offset m)))
 
 ;; ## The Vector
-
-;; We begin by defining some helper functions and a protocol for some
-;; private methods of PersistentVector that are needed for the
-;; implementation.
-
-;; Most of the functions defined in this protocol could be moved into
-;; `let`s inside the implementations that they are helping.  However,
-;; `arrayFor` is used by the chunked sequence to get the next chunk,
-;; so it can not.  However, it should be possible to define it using
-;; `defn` if that will make things faster or easier to understand.
-
-(defprotocol IPVector
-  "Vector functions that are not part of an existing protocol or interface."
-  (tailoff [this])
-  (arrayFor [this i])
-  (new-path [this level node])
-  (push-tail [this level parent tail-node]))
-
-(defn- unsigned-bit-shift-right
-  "Shifts the input `x` to the right by `n` places and sets the leftmost bit to 0."
-  [^long x ^long n]
-  (bit-and 0xefffffff (bit-shift-right x n)))
-
-(defn- copy-array
-  "Copy the elements in `from-array` to `to-array`.  Assumes that
-   `to-array` is as long as `from-array`."
-  [^objects from-array ^objects to-array]
-  (loop [c (count from-array)]
-    (when (> c 0)
-      (aset to-array (dec c) (aget from-array (dec c)))
-      (recur (dec c))))
-  to-array)
 
 ;; ### The persistent vector type.
 
@@ -143,48 +147,72 @@
   ;; Change the `i`th value in the vector to `val`.
   
   (assocN [this i val]
-    (cond (and (>= i 0) (< i cnt))
-          (if (>= i (.tailoff this))
-            (let [^objects new-tail (to-array (repeat (count tail) (Object.)))
-                  _ (copy-array tail new-tail)
-                  _ (aset new-tail (bit-and i 0x1f) val)]
-              (PVector. cnt shift root new-tail _meta))
-            (let [do-assoc (fn do-assoc [level node i val]
-                             (let [node-array (.array node)
-                                   new-array (to-array (repeat (count node-array) (Object.)))
-                                   _ (copy-array node-array new-array)
-                                   new-node (VectorNode. new-array)]
-                               (if (= level 0)
-                                 (do (aset new-array (bit-and i 0x01f) val)
-                                     new-node)
-                                 (let [subidx (bit-and (unsigned-bit-shift-right i level) 0x01f)]
-                                   (aset new-array subidx (do-assoc (- level 5) (aget node-array subidx) i val))
-                                   new-node))))]
-              (PVector. cnt shift (do-assoc shift root i val) tail _meta)))
-          (= i cnt)
-          (.cons this val)
-          :else
-          (throw (IndexOutOfBoundsException.))))
+    (let [tailoff (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5))]
+     (cond (and (>= i 0) (< i cnt))
+           (if (>= i tailoff)
+             (let [^objects new-tail (to-array (repeat (count tail) (Object.)))
+                   _ (copy-array tail new-tail)
+                   _ (aset new-tail (bit-and i 0x1f) val)]
+               (PVector. cnt shift root new-tail _meta))
+             (let [do-assoc (fn do-assoc [level node i val]
+                              (let [node-array (.array node)
+                                    new-array (to-array (repeat (count node-array) (Object.)))
+                                    _ (copy-array node-array new-array)
+                                    new-node (VectorNode. new-array)]
+                                (if (= level 0)
+                                  (do (aset new-array (bit-and i 0x01f) val)
+                                      new-node)
+                                  (let [subidx (bit-and (unsigned-bit-shift-right i level) 0x01f)]
+                                    (aset new-array subidx (do-assoc (- level 5) (aget node-array subidx) i val))
+                                    new-node))))]
+               (PVector. cnt shift (do-assoc shift root i val) tail _meta)))
+           (= i cnt)
+           (.cons this val)
+           :else
+           (throw (IndexOutOfBoundsException.)))))
 
   ;; Add an element to the end of the vector.
   
   (cons [this o]
-    (if (< (- cnt (.tailoff this)) 32)
-      (let [tail-count (count tail)
-            ^objects new-tail (to-array (repeat (inc tail-count) (Object.)))
-            _ (copy-array tail new-tail)
-            _ (aset new-tail tail-count o)]
-        (PVector. (inc cnt) shift root new-tail _meta))
-      (let [tail-node (VectorNode. tail)
-            overflow-root? (> (unsigned-bit-shift-right cnt 5) (bit-shift-left 1 shift))
-            [new-shift new-root]
-            (if overflow-root?
-              (let [^objects new-root-array (to-array (repeat 32 (Object.)))
-                    _ (aset new-root-array 0 root)
-                    _ (aset new-root-array 1 (.new-path this shift tail-node))]
-                [(+ shift 5) (VectorNode. new-root-array)])
-              [shift (.push-tail this shift root tail-node)])]
-        (PVector. (inc cnt) new-shift new-root (to-array (list o)) _meta))))
+    (let [tailoff (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5))]
+      (if (< (- cnt tailoff) 32)
+       (let [tail-count (count tail)
+             ^objects new-tail (to-array (repeat (inc tail-count) (Object.)))
+             _ (copy-array tail new-tail)
+             _ (aset new-tail tail-count o)]
+         (PVector. (inc cnt) shift root new-tail _meta))
+       (let [tail-node (VectorNode. tail)
+             overflow-root? (> (unsigned-bit-shift-right cnt 5) (bit-shift-left 1 shift))
+             new-path (fn new-path [level node]
+                        (if (= level 0)
+                          node
+                          (let [^objects new-array (to-array (repeat 32 (Object.)))
+                                ret (VectorNode. new-array)
+                                _ (aset new-array 0 (new-path (- level 5) node))]
+                            ret)))
+             push-tail (fn push-tail [level parent tail-node]
+                         (let [subidx (bit-and (unsigned-bit-shift-right (dec cnt) level) 0x01f)
+                               ^objects parent-array (.array parent)
+                               ^objects new-arr (to-array (repeat (count parent-array) (Object.)))
+                               _ (copy-array parent-array new-arr)
+                               ret (VectorNode. new-arr)
+                               node-to-insert (if (= level 5)
+                                                tail-node
+                                                (let [child (aget parent-array subidx)]
+                                                  (if child
+                                                    (push-tail (- level 5) child tail-node)
+                                                    (new-path (- level 5) tail-node))))
+                               _ (aset new-arr subidx node-to-insert)]
+                           ret))
+
+             [new-shift new-root]
+             (if overflow-root?
+               (let [^objects new-root-array (to-array (repeat 32 (Object.)))
+                     _ (aset new-root-array 0 root)
+                     _ (aset new-root-array 1 (new-path shift tail-node))]
+                 [(+ shift 5) (VectorNode. new-root-array)])
+               [shift (push-tail shift root tail-node)])]
+         (PVector. (inc cnt) new-shift new-root (to-array (list o)) _meta)))))
   
   clojure.lang.IPersistentCollection
   (empty [this]
@@ -220,57 +248,11 @@
       (throw (IllegalArgumentException. "Key must be integer"))))
 
   (entryAt [this key]
-    (when (.containsKey this key)
+    (when (and (integer? key) (>= key 0) (< key cnt))
       (MapEntry. key (.nth this key))))
 
   (containsKey [this key]
     (and (integer? key) (>= key 0) (< key cnt)))
-  
-  IPVector
-
-  ;; The `i` for which elements larger than `i` are put in the tail.
-  
-  (tailoff [this]
-    (if (< cnt 32)
-      0
-      (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5)))
-
-  ;; Find the node containing the `i`th element
-  
-  (arrayFor [this i]
-    (if (and (>= i 0) (< i cnt))
-      (if (>= i (.tailoff this))
-        tail
-        (loop [^VectorNode node root level shift]
-          (let [^objects arr (.array node)]
-           (if (<= level 0)
-             arr
-             (let [new-node (aget arr (bit-and (unsigned-bit-shift-right i level) 0x01f))]
-               (recur new-node (- level 5)))))))
-      (throw (IndexOutOfBoundsException.))))
-
-  (new-path [this level node]
-    (if (= level 0)
-      node
-      (let [^objects new-array (to-array (repeat 32 (Object.)))
-            ret (VectorNode. new-array)
-            _ (aset new-array 0 (.new-path this (- level 5) node))]
-        ret)))
-  
-  (push-tail [this level parent tail-node]
-    (let [subidx (bit-and (unsigned-bit-shift-right (dec cnt) level) 0x01f)
-          ^objects parent-array (.array parent)
-          ^objects new-arr (to-array (repeat (count parent-array) (Object.)))
-          _ (copy-array parent-array new-arr)
-          ret (VectorNode. new-arr)
-          node-to-insert (if (= level 5)
-                           tail-node
-                           (let [child (aget parent-array subidx)]
-                             (if child
-                               (push-tail this (- level 5) child tail-node)
-                               (new-path this (- level 5) tail-node))))
-          _ (aset new-arr subidx node-to-insert)]
-      ret))
   
   clojure.lang.IPersistentStack
 
@@ -288,7 +270,7 @@
   
   clojure.lang.Seqable
   (seq [this]
-    (ChunkedVector. this (.arrayFor this 0) 0 0 {}))
+    (ChunkedVector. this (array-for this 0) 0 0 {}))
   
   clojure.lang.Reversible
   (rseq [this]
@@ -300,7 +282,7 @@
   
   clojure.lang.Indexed
   (nth [this ^int i]
-    (let [^objects node (.arrayFor this i)]
+    (let [^objects node (array-for this i)]
       (aget node (bit-and i 0x01f))))
   (nth [this i not-found]
     (if (and (>= i 0) (< i cnt))
@@ -355,12 +337,29 @@
   (def m (empty-pvector))
   (sequential? m)
   (def o (-> m (conj 1) (conj 2)))
-  (def p (reduce conj m (range 120)))
+  (def p (reduce conj m (range 1025)))
   (time
    (dotimes [n 100]
-    (nth p 64)))
-  (def q (vec (range 120)))
+     (reduce conj m (range 1025))))
   (time
    (dotimes [n 100]
-     (nth q 64)))
+     (vec (range 1025))))
+  (time
+   (dotimes [n 100]
+     (pvec (range 1025))))
+  (time
+   (dotimes [n 100]
+    (nth p 1023)))
+  (def q (vec (range 1025)))
+  (time
+   (dotimes [n 100]
+     (nth q 1023)))
+  (pvec (range (* 3 1024)))
+  (def r (pvec (range 1025)))
+  (r 65)
+  (def s (vec (range 1025)))
+  ((assoc q 11 12) 11)
+  (q 11)
+  ((assoc p 1023 12) 11)
+
   )
