@@ -228,6 +228,24 @@
   (count [this]
     cnt))
 
+(defn pvec
+  "Construct a PVector from the collection `coll` in linear time."
+  [coll]
+  (let [grouped-coll (partition 32 32 (list) coll)
+        big-groups (butlast grouped-coll)
+        tail (to-array (last grouped-coll))
+        c (count coll)
+        shift (loop [level 0 c (unsigned-bit-shift-right c 5)]
+                 (if (<= c 32)
+                   (* 5 (inc level))
+                   (recur (inc level) (bit-shift-right c 5))))
+        root (loop [groups big-groups]
+               (let [vector-nodes (map #(VectorNode. (to-array %)) groups)]
+                 (if (<= (count groups) 32)
+                   (VectorNode. (to-array (first (partition 32 32 (repeat (Object.)) vector-nodes))))
+                   (recur (partition 32 32 (list) vector-nodes)))))]
+    (PVector. c shift root tail {})))
+
 (defn empty-pvector []
   (PVector. 0 5 empty-node (to-array '()) {}))
 
