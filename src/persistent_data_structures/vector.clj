@@ -94,7 +94,7 @@
 
 (defn- unsigned-bit-shift-right
   "Shifts the input `x` to the right by `n` places and sets the leftmost bit to 0."
-  [x n]
+  [^long x ^long n]
   (bit-and 0xefffffff (bit-shift-right x n)))
 
 (defn- copy-array
@@ -341,7 +341,7 @@
         root (loop [groups big-groups]
                (let [vector-nodes (map #(VectorNode. (to-array %)) groups)]
                  (if (<= (count groups) 32)
-                   (VectorNode. (to-array (first (partition 32 32 (repeat (Object.)) vector-nodes))))
+                   (VectorNode. (to-array (first (partition 32 vector-nodes))))
                    (recur (partition 32 32 (list) vector-nodes)))))]
     (PVector. c shift root tail {})))
 
