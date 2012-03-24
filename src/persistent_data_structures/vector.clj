@@ -74,6 +74,16 @@
 
 ;; ## The Vector
 
+;; We begin by defining some helper functions and a protocol for some
+;; private methods of PersistentVector that are needed for the
+;; implementation.
+
+;; Most of the functions defined in this protocol could be moved into
+;; `let`s inside the implementations that they are helping.  However,
+;; `arrayFor` is used by the chunked sequence to get the next chunk,
+;; so it can not.  However, it should be possible to define it using
+;; `defn` if that will make things faster or easier to understand.
+
 (defprotocol IPVector
   "Vector functions that are not part of an existing protocol or interface."
   (tailoff [this])
@@ -96,13 +106,41 @@
       (recur (dec c))))
   to-array)
 
+;; ### The persistent vector type.
+
+;; As a data structure, it's pretty simple.  There is a tree structure
+;; with a fan-out of 32 that is created by linking `VectorNode`s to
+;; one another, and there is a `tail`, which is simply an array of
+;; less than 32 elements that when full will be added to the tree
+;; structure.
+
+;; One benefit of having the fan-out be 32 (or any power of two
+;; really) is that the `k`th element can be found easily using
+;; bit-twiddling operations.  For the sake of example and to keep the
+;; numbers small, let's imagine that the fan-out was 4, and that there
+;; were 65 elements in the vector.  Then we would have the situation
+;; where there is a tail with one element in it and a full tree that
+;; is three levels high.  Let's try to find the 27th element.  The
+;; number 27 is 011011 in binary.  We can figure out which sub-tree of
+;; the root that the element is in by looking at sub-tree number
+;; (010111 >> (2 * 2)) & 11 = 01 (where the numbers with only 1s and
+;; 0s are in binary, >> denotes right-shift, and & denotes
+;; bitwise-and).  We find the subtree of that tree containing the 27th
+;; element by looking at sub-tree number (010111 >> (1 * 2)) & 11 =
+;; 10, and finally we look at element number (010111 >> (0 * 2)) & 11
+;; = 11 to find the element itself.
+
 (deftype PVector [^int cnt ^int shift ^VectorNode root ^objects tail _meta]
   clojure.lang.IObj
   (meta [this] _meta)
   (withMeta [this m]
     (PVector. cnt shift root tail m))
+  
   clojure.lang.IPersistentVector
   (length [this] cnt)
+
+  ;; Change the `i`th value in the vector to `val`.
+  
   (assocN [this i val]
     (cond (and (>= i 0) (< i cnt))
           (if (>= i (.tailoff this))
@@ -125,11 +163,15 @@
           (.cons this val)
           :else
           (throw (IndexOutOfBoundsException.))))
+
+  ;; Add an element to the end of the vector.
+  
   (cons [this o]
     (if (< (- cnt (.tailoff this)) 32)
-      (let [^objects new-tail (to-array (repeat (inc (count tail)) (Object.)))
+      (let [tail-count (count tail)
+            ^objects new-tail (to-array (repeat (inc tail-count) (Object.)))
             _ (copy-array tail new-tail)
-            _ (aset new-tail (count tail) o)]
+            _ (aset new-tail tail-count o)]
         (PVector. (inc cnt) shift root new-tail _meta))
       (let [tail-node (VectorNode. tail)
             overflow-root? (> (unsigned-bit-shift-right cnt 5) (bit-shift-left 1 shift))
@@ -141,9 +183,14 @@
                 [(+ shift 5) (VectorNode. new-root-array)])
               [shift (.push-tail this shift root tail-node)])]
         (PVector. (inc cnt) new-shift new-root (to-array (list o)) _meta))))
+  
   clojure.lang.IPersistentCollection
   (empty [this]
     (PVector. 0 5 empty-node (to-array '()) _meta))
+
+  ;; Check whether another sequence has all the same elements as this
+  ;; vector.
+  
   (equiv [this o]
     (if (or (list? o) (vector? o))
       (if (not= (count o) (.count this))
@@ -162,11 +209,18 @@
                 false
                 :else
                 (recur (rest s) (rest a)))))))
+  
   IPVector
+
+  ;; The `i` for which elements larger than `i` are put in the tail.
+  
   (tailoff [this]
     (if (< cnt 32)
       0
       (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5)))
+
+  ;; Find the node containing the `i`th element
+  
   (arrayFor [this i]
     (if (and (>= i 0) (< i cnt))
       (if (>= i (.tailoff this))
@@ -178,6 +232,7 @@
              (let [new-node (aget arr (bit-and (unsigned-bit-shift-right i level) 0x01f))]
                (recur new-node (- level 5)))))))
       (throw (IndexOutOfBoundsException.))))
+
   (new-path [this level node]
     (if (= level 0)
       node
@@ -185,6 +240,7 @@
             ret (VectorNode. new-array)
             _ (aset new-array 0 (.new-path this (- level 5) node))]
         ret)))
+  
   (push-tail [this level parent tail-node]
     (let [subidx (bit-and (unsigned-bit-shift-right (dec cnt) level) 0x01f)
           ^objects parent-array (.array parent)
@@ -199,21 +255,33 @@
                                (new-path this (- level 5) tail-node))))
           _ (aset new-arr subidx node-to-insert)]
       ret))
+  
   clojure.lang.IPersistentStack
+
+  ;; Return the last element of the vector
+  
   (peek [this]
     (if (> (.count this) 0)
       (.nth this (dec cnt))))
+
+  ;; Return the vector without its last element.
+  ;; Not yet implemented.
+
   (pop [this]
     (throw (UnsupportedOperationException.)))
+  
   clojure.lang.Seqable
   (seq [this]
     (ChunkedVector. this (.arrayFor this 0) 0 0 {}))
+  
   clojure.lang.Reversible
   (rseq [this]
     (throw (UnsupportedOperationException.)))
+  
   clojure.lang.IFn
   (invoke [this k] (.nth this k))
   (invoke [this k not-found] (.nth this k not-found))
+  
   clojure.lang.Indexed
   (nth [this ^int i]
     (let [^objects node (.arrayFor this i)]
@@ -222,9 +290,26 @@
     (if (and (>= i 0) (< i cnt))
       not-found
       (.nth this i)))
+  
   clojure.lang.Counted
   (count [this]
     cnt))
+
+;; ### Creating the persistent vector
+
+;; The naive way of constructing a persistent vector from a collection
+;; is to repeatedly `conj` elements of the collection onto the empty
+;; vector.  Though this works, it is slow for a couple of reasons.
+;; First, it creates a lot of extra objects to be GC'd without a lot
+;; of purpose.  Second, it takes O(n log n) time (where the base of
+;; the log is 32, so the log n factor will always be pretty small, but
+;; still) rather than the O(n) time that is both optimal and possible.
+
+;; The algorithm works from the bottom up by repeatedly partitioning
+;; the input into groups of 32.  Since the size of the input at each
+;; step is a constant fraction of the previous size, and a linear
+;; amount of work is done at each step, this is a linear-time
+;; algorithm.
 
 (defn pvec
   "Construct a PVector from the collection `coll` in linear time."
@@ -244,7 +329,9 @@
                    (recur (partition 32 32 (list) vector-nodes)))))]
     (PVector. c shift root tail {})))
 
-(defn empty-pvector []
+(defn empty-pvector
+  "Create an empty PVector"
+  []
   (PVector. 0 5 empty-node (to-array '()) {}))
 
 
