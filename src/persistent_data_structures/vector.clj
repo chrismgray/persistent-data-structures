@@ -1,4 +1,5 @@
-(ns persistent-data-structures.vector)
+(ns persistent-data-structures.vector
+  (:import clojure.lang.MapEntry))
 
 ;; # Persistent Vector
 
@@ -144,19 +145,20 @@
   (assocN [this i val]
     (cond (and (>= i 0) (< i cnt))
           (if (>= i (.tailoff this))
-            (let [new-tail (to-array (repeat (count tail) (Object.)))
+            (let [^objects new-tail (to-array (repeat (count tail) (Object.)))
                   _ (copy-array tail new-tail)
                   _ (aset new-tail (bit-and i 0x1f) val)]
               (PVector. cnt shift root new-tail _meta))
             (let [do-assoc (fn do-assoc [level node i val]
-                             (let [new-array (to-array (repeat (count (.array node)) (Object.)))
-                                   _ (copy-array (.array node) new-array)
+                             (let [node-array (.array node)
+                                   new-array (to-array (repeat (count node-array) (Object.)))
+                                   _ (copy-array node-array new-array)
                                    new-node (VectorNode. new-array)]
                                (if (= level 0)
                                  (do (aset new-array (bit-and i 0x01f) val)
                                      new-node)
                                  (let [subidx (bit-and (unsigned-bit-shift-right i level) 0x01f)]
-                                   (aset new-array subidx (do-assoc (- level 5) (aget (.array node)) i val))
+                                   (aset new-array subidx (do-assoc (- level 5) (aget node-array subidx) i val))
                                    new-node))))]
               (PVector. cnt shift (do-assoc shift root i val) tail _meta)))
           (= i cnt)
@@ -209,6 +211,20 @@
                 false
                 :else
                 (recur (rest s) (rest a)))))))
+
+  clojure.lang.Associative
+
+  (assoc [this key val]
+    (if (integer? key)
+      (.assocN this key val)
+      (throw (IllegalArgumentException. "Key must be integer"))))
+
+  (entryAt [this key]
+    (when (.containsKey this key)
+      (MapEntry. key (.nth this key))))
+
+  (containsKey [this key]
+    (and (integer? key) (>= key 0) (< key cnt)))
   
   IPVector
 
