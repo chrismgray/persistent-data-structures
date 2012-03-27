@@ -1,5 +1,6 @@
 (ns persistent-data-structures.vector
-  (:import clojure.lang.MapEntry))
+  (:use [persistent-data-structures.utils :only [unsigned-bit-shift-right copy-array]])
+  (:import [clojure.lang MapEntry Util]))
 
 ;; # Persistent Vector
 
@@ -21,11 +22,6 @@
 
 ;; We begin with some helper functions.
 
-(defn- unsigned-bit-shift-right
-  "Shifts the input `x` to the right by `n` places and sets the leftmost bit to 0."
-  [^long x ^long n]
-  (bit-and 0xefffffff (bit-shift-right x n)))
-
 (defn- array-for
   "A helper function that finds the array containing element `i` "
   [^PVector vec i]
@@ -44,16 +40,6 @@
                (let [new-node (aget arr (bit-and (unsigned-bit-shift-right i level) 0x01f))]
                  (recur new-node (- level 5)))))))
        (throw (IndexOutOfBoundsException.)))))
-
-(defn- copy-array
-  "Copy the elements in `from-array` to `to-array`.  Assumes that
-   `to-array` is as long as `from-array`."
-  [^objects from-array ^objects to-array]
-  (loop [c (count from-array)]
-    (when (> c 0)
-      (aset to-array (dec c) (aget from-array (dec c)))
-      (recur (dec c))))
-  to-array)
 
 ;; ## The Node
 
