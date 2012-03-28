@@ -20,11 +20,20 @@
 
 ;; # The Implementation
 
+;; ## The Node
+
+;; A node is just an array of 32 objects.  They either point to other
+;; nodes or contain the objects that are in the vector.
+
+(deftype VectorNode [^objects array])
+
+(def empty-node (VectorNode. (object-array 32)))
+
 ;; We begin with some helper functions.
 
 (defn- array-for
   "A helper function that finds the array containing element `i` "
-  [^PVector vec i]
+  [vec i]
   (let [cnt (.cnt vec)
         ^VectorNode root (.root vec)
         shift (.shift vec)
@@ -41,14 +50,6 @@
                  (recur new-node (- level 5)))))))
        (throw (IndexOutOfBoundsException.)))))
 
-;; ## The Node
-
-;; A node is just an array of 32 objects.  They either point to other
-;; nodes or contain the objects that are in the vector.
-
-(deftype VectorNode [array])
-
-(def empty-node (VectorNode. (to-array (take 32 (repeat (Object.))))))
 
 ;; ## Chunked Sequences
 
@@ -136,13 +137,13 @@
     (let [tailoff (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5))]
      (cond (and (>= i 0) (< i cnt))
            (if (>= i tailoff)
-             (let [^objects new-tail (to-array (repeat (count tail) (Object.)))
+             (let [^objects new-tail (object-array (count tail))
                    _ (copy-array tail new-tail)
                    _ (aset new-tail (bit-and i 0x1f) val)]
                (PVector. cnt shift root new-tail _meta))
              (let [do-assoc (fn do-assoc [level node i val]
                               (let [node-array (.array node)
-                                    new-array (to-array (repeat (count node-array) (Object.)))
+                                    new-array (object-array (count node-array))
                                     _ (copy-array node-array new-array)
                                     new-node (VectorNode. new-array)]
                                 (if (= level 0)
@@ -163,7 +164,7 @@
     (let [tailoff (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5))]
       (if (< (- cnt tailoff) 32)
        (let [tail-count (count tail)
-             ^objects new-tail (to-array (repeat (inc tail-count) (Object.)))
+             ^objects new-tail (object-array (inc tail-count))
              _ (copy-array tail new-tail)
              _ (aset new-tail tail-count o)]
          (PVector. (inc cnt) shift root new-tail _meta))
@@ -172,14 +173,14 @@
              new-path (fn new-path [level node]
                         (if (= level 0)
                           node
-                          (let [^objects new-array (to-array (repeat 32 (Object.)))
+                          (let [^objects new-array (object-array 32)
                                 ret (VectorNode. new-array)
                                 _ (aset new-array 0 (new-path (- level 5) node))]
                             ret)))
              push-tail (fn push-tail [level parent tail-node]
                          (let [subidx (bit-and (unsigned-bit-shift-right (dec cnt) level) 0x01f)
                                ^objects parent-array (.array parent)
-                               ^objects new-arr (to-array (repeat (count parent-array) (Object.)))
+                               ^objects new-arr (object-array (count parent-array))
                                _ (copy-array parent-array new-arr)
                                ret (VectorNode. new-arr)
                                node-to-insert (if (= level 5)
@@ -193,7 +194,7 @@
 
              [new-shift new-root]
              (if overflow-root?
-               (let [^objects new-root-array (to-array (repeat 32 (Object.)))
+               (let [^objects new-root-array (object-array 32)
                      _ (aset new-root-array 0 root)
                      _ (aset new-root-array 1 (new-path shift tail-node))]
                  [(+ shift 5) (VectorNode. new-root-array)])
@@ -274,6 +275,10 @@
     (if (and (>= i 0) (< i cnt))
       not-found
       (.nth this i)))
+
+  clojure.lang.IHashEq
+  (hasheq [this]
+    (reduce #(+ (* 31 %) (Util/hasheq %2))))
   
   clojure.lang.Counted
   (count [this]
@@ -298,19 +303,36 @@
 (defn pvec
   "Construct a PVector from the collection `coll` in linear time."
   [coll]
-  (let [grouped-coll (partition 32 32 (list) coll)
-        big-groups (butlast grouped-coll)
-        tail (to-array (last grouped-coll))
-        c (count coll)
+  (let [reversed-partition (fn reversed-partition [n coll]
+                             (loop [ret () co coll remaining (count coll)]
+                               (if (empty? co)
+                                 ret
+                                 (let [rem (min 32 remaining)
+                                       ^objects ret-array (object-array rem)
+                                       next-co (loop [cnt 0 coll co]
+                                                 (if (= cnt rem)
+                                                   coll
+                                                   (do (aset ret-array cnt (first coll))
+                                                       (recur (inc cnt) (rest coll)))))]
+                                  (recur (cons ret-array ret) next-co (- remaining rem))))))
+        grouped-coll (reversed-partition 32 coll)
+        big-groups (rest grouped-coll)
+        tail (first grouped-coll)
+        reversed-map (fn [f coll]
+                       (loop [ret () coll coll]
+                         (if (empty? coll)
+                           ret
+                           (recur (cons (f (first coll)) ret) (rest coll)))))
+        c (+ (* 32 (dec (count grouped-coll))) (count tail))
         shift (loop [level 0 c (unsigned-bit-shift-right c 5)]
                  (if (<= c 32)
                    (* 5 (inc level))
                    (recur (inc level) (bit-shift-right c 5))))
-        root (loop [groups big-groups]
-               (let [vector-nodes (map #(VectorNode. (to-array %)) groups)]
-                 (if (<= (count groups) 32)
-                   (VectorNode. (to-array (first (partition 32 vector-nodes))))
-                   (recur (partition 32 32 (list) vector-nodes)))))]
+        root (loop [groups big-groups level shift]
+               (let [vector-nodes (reversed-map #(VectorNode. %) groups)]
+                 (if (= level 5)
+                   (VectorNode. (to-array vector-nodes))
+                   (recur (reversed-partition 32 vector-nodes) (- level 5)))))]
     (PVector. c shift root tail {})))
 
 (defn empty-pvector
@@ -320,6 +342,13 @@
 
 
 (comment
+  (time
+   (dotimes [n 100]
+     (count (range 10000))))
+
+  (pvec (range 38))
+  (rem 100 32)
+
   (def m (empty-pvector))
   (sequential? m)
   (def o (-> m (conj 1) (conj 2)))
@@ -327,12 +356,14 @@
   (time
    (dotimes [n 100]
      (reduce conj m (range 1025))))
-  (time
-   (dotimes [n 100]
-     (vec (range 1025))))
-  (time
-   (dotimes [n 100]
-     (pvec (range 1025))))
+  (let [q (apply list (range (* 32 32 32)))]
+   (time
+    (dotimes [n 100]
+      (vec q))))
+  (let [q (apply list (range (* 32 32 32)))]
+   (time
+    (dotimes [n 100]
+      (pvec q))))
   (time
    (dotimes [n 100]
     (nth p 1023)))
