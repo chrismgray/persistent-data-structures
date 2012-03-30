@@ -8,39 +8,42 @@
 (def empty-object (Object.))
 (defn- empty-object? [x] (identical? empty-object x))
 
-(defn- empty-node-array [] (to-array (repeat 16 empty-object)))
+(def width (int 16))
+(def bit-width (int 4))
+(def bit-mask (int (dec width)))
+(def num-levels (int (/ 32 bit-width)))
+(defn- empty-node-array [] (to-array (repeat width empty-object)))
 (defn- empty-node [] (HashMapNode. (empty-node-array)))
 
 (defn- offset
-  [i level]
-  (bit-and (unsigned-bit-shift-right i (bit-shift-left level 2)) 0xf))
-
-(defn- cyclic-range-for
-  [i level]
-  (let [off (offset i level)]
-    (take 16 (drop off (cycle (range 16))))))
+  [^long i ^long level]
+  (bit-and (unsigned-bit-shift-right i (* level bit-width)) bit-mask))
 
 (defn- find-object
-  "Find the place with the object with hash `i` in the tree rooted at `root`."
   [^HashMapNode root i object]
-  (first
-   (let [get-from (fn [r num]
-                    (if (empty-object? r)
-                      r
-                      (let [^objects arr (.array r)]
-                        (aget arr num))))]
-    (for [a (cyclic-range-for i 7)
-          b (cyclic-range-for i 6)
-          c (cyclic-range-for i 5)
-          d (cyclic-range-for i 4)
-          e (cyclic-range-for i 3)
-          f (cyclic-range-for i 2)
-          g (cyclic-range-for i 1)
-          h (cyclic-range-for i 0)
-          :let [obj (reduce get-from root [a b c d e f g h])]
-          :when (or (empty-object? obj)
-                    (= object (key obj)))]
-      [obj a b c d e f g h]))))
+  (loop [^HashMapNode r root i i obj object level num-levels ret []]
+    (if (= 0 level)
+      (if (empty-object? r)
+        (cons empty-object (conj ret (offset i 0)))
+        (let [^objects arr (.array r)
+              o2 (aget arr (offset i 0))]
+          (cons (if (empty-object? o2) o2 (val o2)) (conj ret (offset i 0)))))
+      (if (empty-object? r)
+        (recur r i obj (dec level) (conj ret (offset i level)))
+        (let [^objects arr (.array r)
+              new-r (aget arr (offset i level))]
+          (recur new-r i obj (dec level) (conj ret (offset i level))))))))
+
+(defn- only-find-object
+  [^HashMapNode root i object]
+  (loop [^HashMapNode r root level num-levels]
+    (if (empty-object? r)
+      r
+      (let [^objects arr (.array r)
+            o2 (aget arr (offset i level))]
+        (if (= 0 level)
+          (if (empty-object? o2) o2 (val o2))
+          (recur o2 (dec level)))))))
 
 (declare empty-phash-map)
 
@@ -54,12 +57,13 @@
   (containsKey [this key]
     (not (empty-object? (first (find-object root (hash key) key)))))
   (entryAt [this key]
-    (when (.containsKey this key)
-      (MapEntry. key (first (find-object root (hash key) key)))))
+    (let [poss-val (first (find-object root (hash key) key))]
+     (when (not (empty-object? poss-val))
+       (MapEntry. key poss-val))))
 
   (assoc [this key val]
     (let [places (rest (find-object root (hash key) key))
-          helper (fn helper [p r]
+          helper (fn helper [p ^HashMapNode r]
                    (if (empty? p)
                      (MapEntry. key val)
                      (let [^objects this-arr (when-not (empty-object? r)
@@ -77,7 +81,7 @@
     (let [helper (fn helper [^objects r]
                    (let [children (remove empty-object? r)]
                      (if (and (seq children) (hash-map-node? (first children)))
-                       (mapcat #(helper (.array %)) children)
+                       (mapcat (fn [^HashMapNode x] (helper (.array x))) children)
                        children)))]
       (helper (.array root))))
 
@@ -89,11 +93,12 @@
 
   clojure.lang.ILookup
   (valAt [this key not-found]
-    (if (.containsKey this key)
-      (val (.entryAt this key))
-      not-found))
+    (let [poss-val (only-find-object root (hash key) key)]
+      (if (empty-object? poss-val)
+        not-found
+        poss-val)))
   (valAt [this key]
-    (let [ans (.valAt this key empty-object)]
+    (let [ans (only-find-object root (hash key) key)]
       (when-not (empty-object? ans)
         ans)))
 
@@ -107,14 +112,21 @@
   (def p (empty-phash-map))
 
   p
+  (find-object (.root (assoc p 1 2)) 3 3)
+  (assoc (assoc p 1 2) 2 3)
+  (apply assoc p (range 200))
   (.containsKey (assoc p 1 2) 1)
-  (let [q (apply assoc p (range 200))]
+  (let [q (apply assoc (empty-phash-map) (range 800))]
    (time (dotimes [n 100]
-           (get q (rand-int 200)))))
+           (get q (rand-int 800)))))
   
-  (let [q (apply assoc {} (range 200))]
+  (let [q (apply assoc {} (range 800))]
     (time (dotimes [n 100]
-            (get q (rand-int 200)))))
+            (get q (rand-int 800)))))
+  (time (dotimes [n 100]
+          (apply assoc (empty-phash-map) (range 200))))
+  (time (dotimes [n 100]
+          (apply assoc {} (range 200))))
   (seq (assoc p 1 2))
   (get (assoc p 1 2) 2 empty-object)
   (.containsKey p 2)
