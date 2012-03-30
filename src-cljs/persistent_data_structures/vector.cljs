@@ -24,9 +24,11 @@
 ;; A node is just an array of 32 objects.  They either point to other
 ;; nodes or contain the objects that are in the vector.
 
+(defn empty-array [size] (js* "new Array(~{size})"))
+
 (deftype VectorNode [^objects array])
 
-(def empty-node (VectorNode. (array 32)))
+(def empty-node (VectorNode. (empty-array 32)))
 
 ;; We begin with some helper functions.
 
@@ -115,13 +117,13 @@
     (let [tailoff (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5))]
      (cond (and (>= i 0) (< i cnt))
            (if (>= i tailoff)
-             (let [^objects new-tail (array (count tail))
+             (let [^objects new-tail (empty-array (count tail))
                    _ (copy-array tail new-tail)
                    _ (aset new-tail (bit-and i 0x1f) val)]
                (PVector. cnt shift root new-tail _meta))
              (let [do-assoc (fn do-assoc [level node i val]
                               (let [node-array (.-array node)
-                                    new-array (array (count node-array))
+                                    new-array (empty-array (count node-array))
                                     _ (copy-array node-array new-array)
                                     new-node (VectorNode. new-array)]
                                 (if (= level 0)
@@ -143,7 +145,7 @@
     (let [tailoff (if (< cnt 32) 0 (bit-shift-left (unsigned-bit-shift-right (dec cnt) 5) 5))]
       (if (< (- cnt tailoff) 32)
        (let [tail-count (count tail)
-             ^objects new-tail (array (inc tail-count))
+             ^objects new-tail (empty-array (inc tail-count))
              _ (copy-array tail new-tail)
              _ (aset new-tail tail-count o)]
          (PVector. (inc cnt) shift root new-tail _meta))
@@ -152,14 +154,14 @@
              new-path (fn new-path [level node]
                         (if (= level 0)
                           node
-                          (let [^objects new-array (array 32)
+                          (let [^objects new-array (empty-array 32)
                                 ret (VectorNode. new-array)
                                 _ (aset new-array 0 (new-path (- level 5) node))]
                             ret)))
              push-tail (fn push-tail [level parent tail-node]
                          (let [subidx (bit-and (unsigned-bit-shift-right (dec cnt) level) 0x01f)
                                ^objects parent-array (.-array parent)
-                               ^objects new-arr (array (count parent-array))
+                               ^objects new-arr (empty-array (count parent-array))
                                _ (copy-array parent-array new-arr)
                                ret (VectorNode. new-arr)
                                node-to-insert (if (= level 5)
@@ -173,7 +175,7 @@
 
              [new-shift new-root]
              (if overflow-root?
-               (let [^objects new-root-array (array 32)
+               (let [^objects new-root-array (empty-array 32)
                      _ (aset new-root-array 0 root)
                      _ (aset new-root-array 1 (new-path shift tail-node))]
                  [(+ shift 5) (VectorNode. new-root-array)])
@@ -280,10 +282,10 @@
   [coll]
   (let [reversed-partition (fn reversed-partition [n coll]
                              (loop [ret () co coll remaining (count coll)]
-                               (if (empty? co)
+                               (if (= 0 remaining)
                                  ret
                                  (let [rem (min 32 remaining)
-                                       ^objects ret-array (array rem)
+                                       ^objects ret-array (empty-array rem)
                                        next-co (loop [cnt 0 coll co]
                                                  (if (= cnt rem)
                                                    coll
