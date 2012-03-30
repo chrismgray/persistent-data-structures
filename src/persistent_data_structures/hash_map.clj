@@ -126,11 +126,11 @@
   (.containsKey (assoc p 1 2) 1)
   (get (assoc p 1 2) 1)
   (let [q (apply assoc (empty-phash-map) (range 1600))]
-   (time (dotimes [n 100]
+   (time (dotimes [n 10000]
            (get q (rand-int 800)))))
 
   (let [q (apply assoc {} (range 1600))]
-    (time (dotimes [n 100]
+    (time (dotimes [n 10000]
             (get q (rand-int 800)))))
   (time (dotimes [n 100]
           (apply assoc (empty-phash-map) (range 200))))
