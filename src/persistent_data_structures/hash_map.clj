@@ -2,48 +2,67 @@
   (:use [persistent-data-structures.utils :only [unsigned-bit-shift-right copy-array]])
   (:import [clojure.lang MapEntry Util]))
 
-(deftype HashMapNode [^objects array])
+(deftype HashMapNode [prefix mask zero-branch one-branch kvs]
+  clojure.lang.Seqable
+  (seq [this]
+    (list prefix mask kvs (seq zero-branch) (seq one-branch))))
 (defn- hash-map-node? [x] (instance? HashMapNode x))
 
 (def empty-object (Object.))
 (defn- empty-object? [x] (identical? empty-object x))
 
-(def width (int 16))
-(def bit-width (int 4))
-(def bit-mask (int (dec width)))
-(def num-levels (int (/ 32 bit-width)))
-(defn- empty-node-array [] (to-array (repeat width empty-object)))
-(defn- empty-node [] (HashMapNode. (empty-node-array)))
+(defn root-node [] (HashMapNode. nil 0 nil nil nil))
 
-(defn- offset
-  [^long i ^long level]
-  (bit-and (unsigned-bit-shift-right i (* level bit-width)) bit-mask))
+(defn find-object [^HashMapNode root hash object not-found]
+  (if (nil? root)
+    not-found
+   (let [pref (.prefix root)
+         mask (.mask root)
+         kvs (.kvs root)
+         zero-branch (.zero-branch root)
+         one-branch (.one-branch root)]
+     (if kvs
+       (or (some #(when (= object (key %)) %) kvs) not-found)
+       (if (nil? pref)
+         (if (< hash (bit-shift-left 1 31))
+           (recur zero-branch hash object not-found)
+           (recur one-branch hash object not-found))
+         (if (not= 0 (bit-xor (bit-and hash mask) pref))
+           not-found
+           ;; Now we know that the prefixes are the same
+           ;; We just need to figure out which tree to descend into
+           (if (zero? (bit-and (bit-not mask) (bit-and (bit-shift-right mask 1) hash)))
+             (recur zero-branch hash object not-found)
+             (recur one-branch hash object not-found))))))))
 
-(defn- find-object
-  [^HashMapNode root i object]
-  (loop [^HashMapNode r root i i obj object level num-levels ret []]
-    (if (= 0 level)
-      (if (empty-object? r)
-        (cons empty-object (conj ret (offset i 0)))
-        (let [^objects arr (.array r)
-              o2 (aget arr (offset i 0))]
-          (cons (if (empty-object? o2) o2 (val o2)) (conj ret (offset i 0)))))
-      (if (empty-object? r)
-        (recur r i obj (dec level) (conj ret (offset i level)))
-        (let [^objects arr (.array r)
-              new-r (aget arr (offset i level))]
-          (recur new-r i obj (dec level) (conj ret (offset i level))))))))
-
-(defn- only-find-object
-  [^HashMapNode root i object]
-  (loop [^HashMapNode r root level num-levels]
-    (if (empty-object? r)
-      r
-      (let [^objects arr (.array r)
-            o2 (aget arr (offset i level))]
-        (if (= 0 level)
-          (if (empty-object? o2) o2 (val o2))
-          (recur o2 (dec level)))))))
+(defn insert-object [^HashMapNode root hash [k v :as kv]]
+  (if (nil? root)
+    (HashMapNode. hash 0xffffffff nil nil (list (MapEntry. k v)))
+    (let [pref (.prefix root)
+          mask (.mask root)
+          kvs (.kvs root)
+          zero-branch (.zero-branch root)
+          one-branch (.one-branch root)]
+      (if (nil? pref)
+          (if (< hash (bit-shift-left 1 31))
+            (HashMapNode. pref mask (insert-object zero-branch hash kv) one-branch kvs)
+            (HashMapNode. pref mask zero-branch (insert-object one-branch hash kv) kvs))
+          (if (not= 0 (bit-xor (bit-and hash mask) pref))
+            ;; Insert the node between root and the previous node
+            (let [[new-pref new-mask]
+                  (loop [new-mask (bit-shift-left mask 1)]
+                    (if (= 0 (bit-xor (bit-and hash new-mask) (bit-and pref new-mask)))
+                      [(bit-and pref new-mask) new-mask]
+                      (recur (bit-shift-left new-mask 1))))]
+              (if (zero? (bit-and (bit-not new-mask) (bit-and (bit-shift-right new-mask 1) pref)))
+                (HashMapNode. new-pref new-mask root (insert-object nil hash kv) nil)
+                (HashMapNode. new-pref new-mask (insert-object nil hash kv) root nil)))
+            ;; Prefixes are the same, see if we're at a leaf
+            (if kvs
+              (HashMapNode. pref mask zero-branch one-branch (cons (MapEntry. k v) (remove #(= k (key %)) kvs)))
+              (if (zero? (bit-and (bit-not mask) (bit-and (bit-shift-right mask 1) hash)))
+                (HashMapNode. pref mask (insert-object zero-branch hash kv) one-branch kvs)
+                (HashMapNode. pref mask zero-branch (insert-object one-branch hash kv) kvs))))))))
 
 (declare empty-phash-map)
 
@@ -55,72 +74,62 @@
 
   clojure.lang.IPersistentMap
   (containsKey [this key]
-    (not (empty-object? (first (find-object root (hash key) key)))))
+    (not (empty-object? (find-object root (hash key) key empty-object))))
   (entryAt [this key]
-    (let [poss-val (first (find-object root (hash key) key))]
-     (when (not (empty-object? poss-val))
-       (MapEntry. key poss-val))))
+    (let [poss-val (find-object root (hash key) key empty-object)]
+      (when-not (empty-object? poss-val)
+        (MapEntry. key (second poss-val)))))
 
   (assoc [this key val]
-    (let [places (rest (find-object root (hash key) key))
-          helper (fn helper [p ^HashMapNode r]
-                   (if (empty? p)
-                     (MapEntry. key val)
-                     (let [^objects this-arr (when-not (empty-object? r)
-                                               (.array r))
-                           ^objects new-arr (empty-node-array)]
-                       (when-not (empty-object? r)
-                         (copy-array this-arr new-arr))
-                       (aset new-arr (first p) (helper (rest p) (aget new-arr (first p))))
-                       (HashMapNode. new-arr))))]
-      (PHashMap. (if (.containsKey this key) cnt (inc cnt)) (helper places root) _meta)))
+    (PHashMap. (if (.containsKey this key) cnt (inc cnt)) (insert-object root (hash key) [key val]) _meta))
 
   (empty [this] (empty-phash-map))
   (cons [this [item value]] (.assoc this item value))
   (seq [this]
-    (let [helper (fn helper [^objects r]
-                   (let [children (remove empty-object? r)]
-                     (if (and (seq children) (hash-map-node? (first children)))
-                       (mapcat (fn [^HashMapNode x] (helper (.array x))) children)
-                       children)))]
-      (helper (.array root))))
+    (let [helper
+          (fn helper [root]
+            (if (nil? root)
+              nil
+             (let [kvs (.kvs root)]
+               (if kvs
+                 (remove (comp empty-object? val) kvs)
+                 (concat (helper (.zero-branch root)) (helper (.one-branch root)))))))]
+      (helper root)))
 
   (count [this] cnt)
 
   (without [this key]
-    ;; TODO
-    )
+    (.assoc this key empty-object))
 
   clojure.lang.ILookup
   (valAt [this key not-found]
-    (let [poss-val (only-find-object root (hash key) key)]
+    (let [poss-val (find-object root (hash key) key empty-object)]
       (if (empty-object? poss-val)
         not-found
-        poss-val)))
+        (val poss-val))))
   (valAt [this key]
-    (let [ans (only-find-object root (hash key) key)]
+    (let [ans (find-object root (hash key) key empty-object)]
       (when-not (empty-object? ans)
-        ans)))
-
-
-  )
+        (val ans)))))
 
 (defn empty-phash-map []
-  (PHashMap. 0 (empty-node) {}))
+  (PHashMap. 0 (root-node) {}))
 
 (comment
   (def p (empty-phash-map))
 
+  (seq (.root (assoc p 1 2)))
   p
   (find-object (.root (assoc p 1 2)) 3 3)
-  (assoc (assoc p 1 2) 2 3)
-  (apply assoc p (range 200))
+  (seq (.root (assoc (assoc p 1 2) 2 3)))
+  (seq (.root (apply assoc p (range 10))))
   (.containsKey (assoc p 1 2) 1)
-  (let [q (apply assoc (empty-phash-map) (range 800))]
+  (get (assoc p 1 2) 1)
+  (let [q (apply assoc (empty-phash-map) (range 1600))]
    (time (dotimes [n 100]
            (get q (rand-int 800)))))
-  
-  (let [q (apply assoc {} (range 800))]
+
+  (let [q (apply assoc {} (range 1600))]
     (time (dotimes [n 100]
             (get q (rand-int 800)))))
   (time (dotimes [n 100]
