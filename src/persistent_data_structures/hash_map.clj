@@ -87,7 +87,7 @@
   (cons [this [item value]] (.assoc this item value))
   (seq [this]
     (let [helper
-          (fn helper [root]
+          (fn helper [^HashMapNode root]
             (if (nil? root)
               nil
              (let [kvs (.kvs root)]
