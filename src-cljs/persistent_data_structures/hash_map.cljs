@@ -135,8 +135,8 @@
 (defn empty-phash-map []
   (PHashMap. 0 (root-node) {}))
 
-(dotimes [n 1000]
-  (apply assoc (empty-phash-map) (range 1000)))
+;; (dotimes [n 1000]
+;;   (apply assoc (empty-phash-map) (range 1000)))
 
 ;; (let [q (apply assoc (empty-phash-map) (range 1000))]
 ;;   (dotimes [n 100000]
