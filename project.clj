@@ -4,7 +4,7 @@
   :cljsbuild {
               :source-path "src-cljs"
               :compiler {
-                         :output-to "foo"
+                         :output-to "foo.js"
                          :optimizations :whitespace
                          :pretty-print true
                          }

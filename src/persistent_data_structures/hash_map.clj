@@ -2,7 +2,7 @@
   (:use [persistent-data-structures.utils :only [unsigned-bit-shift-right copy-array]])
   (:import [clojure.lang MapEntry Util]))
 
-(deftype HashMapNode [prefix mask zero-branch one-branch kvs]
+(deftype HashMapNode [^long prefix ^long mask zero-branch one-branch kvs]
   clojure.lang.Seqable
   (seq [this]
     (list prefix mask kvs (seq zero-branch) (seq one-branch))))
@@ -11,9 +11,9 @@
 (def empty-object (Object.))
 (defn- empty-object? [x] (identical? empty-object x))
 
-(defn root-node [] (HashMapNode. nil 0 nil nil nil))
+(defn root-node [] (HashMapNode. 0 0 nil nil nil))
 
-(defn find-object [^HashMapNode root hash object not-found]
+(defn- find-object [^HashMapNode root hash object not-found]
   (if (nil? root)
     not-found
    (let [pref (.prefix root)
@@ -23,19 +23,19 @@
          one-branch (.one-branch root)]
      (if kvs
        (or (some #(when (= object (key %)) %) kvs) not-found)
-       (if (nil? pref)
+       (if (zero? mask)
          (if (< hash (bit-shift-left 1 31))
            (recur zero-branch hash object not-found)
            (recur one-branch hash object not-found))
-         (if (not= 0 (bit-xor (bit-and hash mask) pref))
-           not-found
+         (if (zero? (bit-xor (bit-and hash mask) pref))
            ;; Now we know that the prefixes are the same
            ;; We just need to figure out which tree to descend into
            (if (zero? (bit-and (bit-not mask) (bit-and (bit-shift-right mask 1) hash)))
              (recur zero-branch hash object not-found)
-             (recur one-branch hash object not-found))))))))
+             (recur one-branch hash object not-found))
+           not-found))))))
 
-(defn insert-object [^HashMapNode root hash [k v :as kv]]
+(defn- insert-object [^HashMapNode root hash [k v :as kv]]
   (if (nil? root)
     (HashMapNode. hash 0xffffffff nil nil (list (MapEntry. k v)))
     (let [pref (.prefix root)
@@ -43,7 +43,7 @@
           kvs (.kvs root)
           zero-branch (.zero-branch root)
           one-branch (.one-branch root)]
-      (if (nil? pref)
+      (if (zero? mask)
           (if (< hash (bit-shift-left 1 31))
             (HashMapNode. pref mask (insert-object zero-branch hash kv) one-branch kvs)
             (HashMapNode. pref mask zero-branch (insert-object one-branch hash kv) kvs))
@@ -104,12 +104,12 @@
   clojure.lang.ILookup
   (valAt [this key not-found]
     (let [poss-val (find-object root (hash key) key empty-object)]
-      (if (empty-object? poss-val)
+      (if (or (empty-object? poss-val) (empty-object? (val poss-val)))
         not-found
         (val poss-val))))
   (valAt [this key]
     (let [ans (find-object root (hash key) key empty-object)]
-      (when-not (empty-object? ans)
+      (when-not (or (empty-object? ans) (empty-object? (val ans)))
         (val ans)))))
 
 (defn empty-phash-map []
@@ -129,6 +129,13 @@
    (time (dotimes [n 10000]
            (get q (rand-int 800)))))
 
+  (get (dissoc (assoc (empty-phash-map) 1 3 2 4 2 5) 2) 2)
+
+  (time (dotimes [n 100]
+          (apply assoc (empty-phash-map) (range 10000))))
+  (time (dotimes [n 100]
+          (apply assoc {} (range 10000))))
+
   (let [q (apply assoc {} (range 1600))]
     (time (dotimes [n 10000]
             (get q (rand-int 800)))))
@@ -140,6 +147,8 @@
   (get (assoc p 1 2) 2 empty-object)
   (.containsKey p 2)
   (identical? empty-object (find-object (empty-node) (find-object-place (empty-node) 1 1)))
+
+  (hash -3)
   (rand-int (* 32 32))
   (set! *warn-on-reflection* true)
   )
